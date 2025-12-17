@@ -3,22 +3,15 @@ name: Build & Release
 on:
   push:
     tags:
-      - 'v*'  # v1.0.0 같은 태그 푸시 시 실행
-  workflow_dispatch:  # 수동 실행 가능
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            name: Windows
-            extension: .exe
-          - os: macos-latest
-            name: macOS
-            extension: .app
-    
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
     
     steps:
       - name: Checkout code
@@ -35,32 +28,46 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       
-      - name: Build executable (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Build executable
         run: |
           pyinstaller --onefile --windowed --name "MSG_to_EML_Converter" gui_app.py
       
-      - name: Build executable (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          pyinstaller --onefile --windowed --name "MSG to EML Converter" gui_app.py
-      
-      - name: Upload artifact (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: MSG_to_EML_Converter-Windows
           path: dist/MSG_to_EML_Converter.exe
+
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - name: Upload artifact (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build executable
+        run: |
+          pyinstaller --onefile --windowed --name "MSG_to_EML_Converter" gui_app.py
+      
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: MSG_to_EML_Converter-macOS
-          path: dist/MSG to EML Converter.app
-  
+          path: dist/MSG_to_EML_Converter
+
   release:
-    needs: build
+    needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     
@@ -69,40 +76,37 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: MSG_to_EML_Converter-Windows
-          path: ./release
+          path: ./windows
       
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:
           name: MSG_to_EML_Converter-macOS
-          path: ./release
+          path: ./macos
       
       - name: Create ZIP files
         run: |
-          cd release
-          zip -r MSG_to_EML_Converter-Windows.zip MSG_to_EML_Converter.exe || true
-          zip -r "MSG_to_EML_Converter-macOS.zip" "MSG to EML Converter.app" || true
+          cd windows && zip -r ../MSG_to_EML_Converter-Windows.zip . && cd ..
+          cd macos && zip -r ../MSG_to_EML_Converter-macOS.zip . && cd ..
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            release/MSG_to_EML_Converter-Windows.zip
-            release/MSG_to_EML_Converter-macOS.zip
+            MSG_to_EML_Converter-Windows.zip
+            MSG_to_EML_Converter-macOS.zip
           body: |
-            ## MSG to EML Converter
+            ## MSG to EML Converter v${{ github.ref_name }}
             
             Microsoft Outlook MSG 파일을 EML 형식으로 변환하는 프로그램입니다.
             
             ### 다운로드
-            - **Windows**: `MSG_to_EML_Converter-Windows.zip` 다운로드 후 압축 해제
-            - **macOS**: `MSG_to_EML_Converter-macOS.zip` 다운로드 후 압축 해제
+            - **Windows**: `MSG_to_EML_Converter-Windows.zip`
+            - **macOS**: `MSG_to_EML_Converter-macOS.zip`
             
             ### 사용법
-            1. 프로그램 실행
-            2. MSG 파일 또는 폴더 선택
-            3. "변환 시작" 클릭
-          draft: false
-          prerelease: false
+            1. ZIP 파일 압축 해제
+            2. 프로그램 실행
+            3. MSG 파일 선택 후 "변환 시작" 클릭
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
