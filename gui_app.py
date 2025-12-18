@@ -289,14 +289,14 @@ class ConverterTab(ctk.CTkFrame):
     def _select_output(self):
         """출력 경로 선택"""
         if self.combine_output:
-            file_path = filedialog.asksaveasfilename(
-                title=f"출력 {self.target_ext.upper()} 파일 저장",
-                defaultextension=f".{self.target_ext}",
-                filetypes=[(f"{self.target_ext.upper()} 파일", f"*.{self.target_ext}")]
-            )
-            if file_path:
-                self.output_folder = file_path
-                self.output_path_var.set(Path(file_path).name)
+            # PST: 출력 폴더 선택 (파일명은 자동 생성)
+            folder = filedialog.askdirectory(title=f"출력 {self.target_ext.upper()} 파일을 저장할 폴더 선택")
+            if folder:
+                self.output_folder = folder
+                self.output_path_var.set(folder)
+            else:
+                self.output_folder = None
+                self.output_path_var.set("지정하려면 클릭")
         else:
             folder = filedialog.askdirectory(title="출력 폴더 선택")
             if folder:
@@ -421,7 +421,13 @@ class ConverterTab(ctk.CTkFrame):
             ))
             
             try:
-                result = self.converter.convert_files(file_paths, self.output_folder)
+                # 출력 파일 경로 생성 (폴더 + 자동 파일명)
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_filename = f"Converted_Emails_{timestamp}.{self.target_ext}"
+                output_path = str(Path(self.output_folder) / output_filename)
+                
+                result = self.converter.convert_files(file_paths, output_path)
                 
                 for i, (list_index, file_path, _, _) in enumerate(pending_files):
                     self.files[list_index] = (file_path, "success", result)

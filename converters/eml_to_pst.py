@@ -6,6 +6,11 @@ EML to PST Converter
 
 기술: pywin32를 통한 Outlook COM 자동화
 요구사항: Windows + Microsoft Outlook 설치
+
+수정사항 v2.1:
+- 메일이 '받은 편지함' 형태로 표시되도록 수정 (초안 X)
+- 폴더 이름에 날짜/시간 포함
+- 폴더 이름 커스터마이즈 가능
 """
 
 import os
@@ -14,10 +19,12 @@ import email
 import tempfile
 from email import policy
 from email.parser import BytesParser
+from email.utils import parsedate_to_datetime
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +60,25 @@ def check_outlook_available() -> tuple:
         return False, f"Outlook을 시작할 수 없습니다: {e}"
 
 
+def generate_folder_name() -> str:
+    """변환 폴더 이름 생성 (날짜/시간 포함)"""
+    now = datetime.now()
+    return f"Converted Mails ({now.strftime('%Y-%m-%d %H.%M')})"
+
+
 class EMLtoPSTConverter:
     """EML 파일들을 PST 파일로 변환하는 클래스"""
+    
+    # MAPI 속성 태그
+    PR_MESSAGE_FLAGS = "http://schemas.microsoft.com/mapi/proptag/0x0E070003"
+    PR_MESSAGE_DELIVERY_TIME = "http://schemas.microsoft.com/mapi/proptag/0x0E060040"
+    PR_CLIENT_SUBMIT_TIME = "http://schemas.microsoft.com/mapi/proptag/0x00390040"
+    PR_SENDER_NAME = "http://schemas.microsoft.com/mapi/proptag/0x0C1A001F"
+    PR_SENDER_EMAIL_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x0C1F001F"
+    
+    # 메시지 플래그
+    MSGFLAG_READ = 0x0001
+    MSGFLAG_UNSENT = 0x0008  # 이 플래그가 있으면 초안/작성중
     
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -94,14 +118,14 @@ class EMLtoPSTConverter:
             pass
     
     def convert_files(self, eml_paths: List[str], pst_path: str, 
-                      folder_name: str = "Imported Emails") -> str:
+                      folder_name: str = None) -> str:
         """
         여러 EML 파일을 하나의 PST 파일로 변환
         
         Args:
             eml_paths: EML 파일 경로 리스트
             pst_path: 생성할 PST 파일 경로
-            folder_name: PST 내 폴더 이름
+            folder_name: PST 내 폴더 이름 (None이면 자동 생성)
             
         Returns:
             생성된 PST 파일 경로
@@ -111,6 +135,10 @@ class EMLtoPSTConverter:
             raise RuntimeError(f"Outlook을 사용할 수 없습니다: {error}")
         
         pst_path = Path(pst_path)
+        
+        # 폴더 이름 자동 생성
+        if folder_name is None:
+            folder_name = generate_folder_name()
         
         try:
             self._init_outlook()
@@ -138,6 +166,13 @@ class EMLtoPSTConverter:
             # 루트 폴더 가져오기
             root_folder = pst_store.GetRootFolder()
             
+            # 루트 폴더 이름 변경 (PST 파일명의 표시 이름)
+            try:
+                pst_display_name = f"Imported ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+                root_folder.Name = pst_display_name
+            except Exception as e:
+                self.log(f"루트 폴더 이름 변경 실패: {e}")
+            
             # 새 폴더 생성
             try:
                 import_folder = root_folder.Folders.Add(folder_name)
@@ -152,26 +187,27 @@ class EMLtoPSTConverter:
             
             for eml_path in eml_paths:
                 try:
-                    self._import_eml_to_folder(eml_path, import_folder)
+                    self._import_eml_as_received(eml_path, import_folder)
                     success_count += 1
                     self.log(f"추가됨: {Path(eml_path).name}")
                 except Exception as e:
                     error_count += 1
                     logger.error(f"EML 추가 실패 {eml_path}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             
             self.log(f"변환 완료: {success_count}개 성공, {error_count}개 실패")
-            
-            # PST 스토어 분리 (선택적)
-            # self.namespace.RemoveStore(root_folder)
             
             return str(pst_path)
             
         finally:
             self._cleanup_outlook()
     
-    def _import_eml_to_folder(self, eml_path: str, folder):
+    def _import_eml_as_received(self, eml_path: str, folder):
         """
-        단일 EML 파일을 Outlook 폴더로 가져오기
+        EML 파일을 '받은 메일'로 가져오기 (초안 아님)
+        
+        핵심: PostItem을 사용하거나, MailItem 저장 후 MAPI 속성 수정
         """
         eml_path = Path(eml_path)
         
@@ -179,29 +215,46 @@ class EMLtoPSTConverter:
         with open(eml_path, 'rb') as f:
             msg = BytesParser(policy=policy.default).parse(f)
         
-        # 새 메일 아이템 생성
-        mail_item = self.outlook.CreateItem(0)  # 0 = olMailItem
+        # 발신자/수신자 정보 추출
+        from_addr = msg.get('From', '')
+        to_addr = msg.get('To', '')
+        cc_addr = msg.get('Cc', '')
+        subject = msg.get('Subject', '(제목 없음)')
         
-        # 속성 설정
-        mail_item.Subject = msg.get('Subject', '')
+        # 날짜 파싱
+        date_str = msg.get('Date', '')
+        received_time = None
+        if date_str:
+            try:
+                received_time = parsedate_to_datetime(date_str)
+            except:
+                pass
         
-        # 본문 설정
+        # 본문 추출
         body = ""
         html_body = ""
         
         if msg.is_multipart():
             for part in msg.walk():
                 content_type = part.get_content_type()
-                if content_type == 'text/plain' and not body:
-                    try:
-                        body = part.get_content()
-                    except:
-                        body = part.get_payload(decode=True).decode('utf-8', errors='replace')
-                elif content_type == 'text/html' and not html_body:
-                    try:
-                        html_body = part.get_content()
-                    except:
-                        html_body = part.get_payload(decode=True).decode('utf-8', errors='replace')
+                content_disposition = part.get_content_disposition()
+                
+                # 첨부파일이 아닌 경우만 본문으로 처리
+                if content_disposition != 'attachment':
+                    if content_type == 'text/plain' and not body:
+                        try:
+                            body = part.get_content()
+                        except:
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                body = payload.decode('utf-8', errors='replace')
+                    elif content_type == 'text/html' and not html_body:
+                        try:
+                            html_body = part.get_content()
+                        except:
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                html_body = payload.decode('utf-8', errors='replace')
         else:
             try:
                 if msg.get_content_type() == 'text/html':
@@ -213,28 +266,69 @@ class EMLtoPSTConverter:
                 if payload:
                     body = payload.decode('utf-8', errors='replace')
         
+        # 방법 1: PostItem 사용 (받은 메일처럼 표시)
+        # PostItem은 저장 시 초안으로 표시되지 않음
+        try:
+            # 대상 폴더에 직접 아이템 생성
+            mail_item = folder.Items.Add("IPM.Note")
+        except:
+            # 폴백: 일반 MailItem 생성
+            mail_item = self.outlook.CreateItem(0)
+        
+        # 기본 속성 설정
+        mail_item.Subject = subject
+        
         if html_body:
             mail_item.HTMLBody = html_body
         else:
             mail_item.Body = body or ""
         
-        # 수신자 설정 (To)
-        to_addr = msg.get('To', '')
-        if to_addr:
-            for addr in to_addr.split(','):
-                addr = addr.strip()
-                if addr:
-                    recipient = mail_item.Recipients.Add(addr)
-                    recipient.Type = 1  # olTo
+        # 발신자 정보 설정 (SenderName, SenderEmailAddress)
+        try:
+            # PropertyAccessor를 사용하여 발신자 정보 설정
+            prop_accessor = mail_item.PropertyAccessor
+            
+            # 발신자 이름과 이메일 파싱
+            sender_name, sender_email = self._parse_email_address(from_addr)
+            
+            if sender_name:
+                try:
+                    prop_accessor.SetProperty(self.PR_SENDER_NAME, sender_name)
+                except:
+                    pass
+            if sender_email:
+                try:
+                    prop_accessor.SetProperty(self.PR_SENDER_EMAIL_ADDRESS, sender_email)
+                except:
+                    pass
+        except Exception as e:
+            self.log(f"발신자 설정 실패: {e}")
         
-        # CC 설정
-        cc_addr = msg.get('Cc', '')
-        if cc_addr:
-            for addr in cc_addr.split(','):
-                addr = addr.strip()
+        # 수신자 추가 (To)
+        if to_addr:
+            for addr in self._split_addresses(to_addr):
                 if addr:
-                    recipient = mail_item.Recipients.Add(addr)
-                    recipient.Type = 2  # olCC
+                    try:
+                        recipient = mail_item.Recipients.Add(addr)
+                        recipient.Type = 1  # olTo
+                    except:
+                        pass
+        
+        # CC 추가
+        if cc_addr:
+            for addr in self._split_addresses(cc_addr):
+                if addr:
+                    try:
+                        recipient = mail_item.Recipients.Add(addr)
+                        recipient.Type = 2  # olCC
+                    except:
+                        pass
+        
+        # 수신자 확인
+        try:
+            mail_item.Recipients.ResolveAll()
+        except:
+            pass
         
         # 첨부파일 처리
         if msg.is_multipart():
@@ -242,26 +336,106 @@ class EMLtoPSTConverter:
                 if part.get_content_disposition() == 'attachment':
                     filename = part.get_filename()
                     if filename:
-                        # 임시 파일로 저장 후 첨부
                         payload = part.get_payload(decode=True)
                         if payload:
                             temp_dir = tempfile.mkdtemp()
                             temp_path = os.path.join(temp_dir, filename)
-                            with open(temp_path, 'wb') as f:
-                                f.write(payload)
-                            mail_item.Attachments.Add(temp_path)
-                            os.remove(temp_path)
-                            os.rmdir(temp_dir)
+                            try:
+                                with open(temp_path, 'wb') as f:
+                                    f.write(payload)
+                                mail_item.Attachments.Add(temp_path)
+                            finally:
+                                try:
+                                    os.remove(temp_path)
+                                    os.rmdir(temp_dir)
+                                except:
+                                    pass
         
-        # 폴더로 이동
-        mail_item.Move(folder)
+        # 저장 (아직 폴더에서 생성한 경우 이미 해당 폴더에 있음)
+        mail_item.Save()
+        
+        # MAPI 속성 수정하여 '받은 메일'로 표시
+        try:
+            prop_accessor = mail_item.PropertyAccessor
+            
+            # 메시지 플래그: UNSENT 플래그 제거, READ 플래그 추가
+            # MSGFLAG_READ (0x0001) 만 설정 = 읽음 상태의 받은 메일
+            prop_accessor.SetProperty(self.PR_MESSAGE_FLAGS, self.MSGFLAG_READ)
+            
+            # 받은 시간 설정
+            if received_time:
+                try:
+                    prop_accessor.SetProperty(self.PR_MESSAGE_DELIVERY_TIME, received_time)
+                    prop_accessor.SetProperty(self.PR_CLIENT_SUBMIT_TIME, received_time)
+                except:
+                    pass
+            
+            mail_item.Save()
+            
+        except Exception as e:
+            self.log(f"MAPI 속성 설정 실패: {e}")
+        
+        # 아이템이 다른 폴더에 있으면 대상 폴더로 이동
+        try:
+            if mail_item.Parent.EntryID != folder.EntryID:
+                mail_item.Move(folder)
+        except:
+            pass
+    
+    def _parse_email_address(self, addr_str: str) -> tuple:
+        """
+        이메일 주소 문자열 파싱
+        "Name <email@example.com>" -> ("Name", "email@example.com")
+        """
+        if not addr_str:
+            return "", ""
+        
+        # "Name <email>" 형식
+        match = re.match(r'^"?([^"<]*)"?\s*<([^>]+)>$', addr_str.strip())
+        if match:
+            return match.group(1).strip(), match.group(2).strip()
+        
+        # 이메일만 있는 경우
+        match = re.match(r'^([^@\s]+@[^@\s]+)$', addr_str.strip())
+        if match:
+            return "", match.group(1)
+        
+        return "", addr_str.strip()
+    
+    def _split_addresses(self, addr_str: str) -> List[str]:
+        """여러 이메일 주소 분리"""
+        if not addr_str:
+            return []
+        
+        # 간단한 분리 (쉼표/세미콜론)
+        addresses = []
+        current = ""
+        in_quotes = False
+        in_brackets = False
+        
+        for char in addr_str:
+            if char == '"':
+                in_quotes = not in_quotes
+            elif char == '<':
+                in_brackets = True
+            elif char == '>':
+                in_brackets = False
+            elif char in ',;' and not in_quotes and not in_brackets:
+                if current.strip():
+                    addresses.append(current.strip())
+                current = ""
+                continue
+            current += char
+        
+        if current.strip():
+            addresses.append(current.strip())
+        
+        return addresses
     
     def convert_directory(self, directory: str, pst_path: str, 
                          recursive: bool = False,
-                         folder_name: str = "Imported Emails") -> str:
-        """
-        디렉토리 내의 모든 EML 파일을 PST로 변환
-        """
+                         folder_name: str = None) -> str:
+        """디렉토리 내의 모든 EML 파일을 PST로 변환"""
         directory = Path(directory)
         
         if not directory.exists():
@@ -284,11 +458,7 @@ class EMLtoPSTConverter:
         
         print(f"총 {len(eml_files)}개의 EML 파일을 발견했습니다.")
         
-        return self.convert_files(
-            [str(f) for f in eml_files], 
-            pst_path, 
-            folder_name
-        )
+        return self.convert_files([str(f) for f in eml_files], pst_path, folder_name)
 
 
 # macOS/Linux용 대체 구현 (MBOX)
@@ -304,14 +474,10 @@ class EMLtoMBOXConverter:
         logger.debug(message)
     
     def convert_files(self, eml_paths: List[str], mbox_path: str) -> str:
-        """
-        여러 EML 파일을 하나의 MBOX 파일로 변환
-        """
+        """여러 EML 파일을 하나의 MBOX 파일로 변환"""
         import mailbox
         
         mbox_path = Path(mbox_path)
-        
-        # MBOX 파일 생성
         mbox = mailbox.mbox(str(mbox_path))
         
         try:
@@ -322,7 +488,6 @@ class EMLtoMBOXConverter:
                     with open(eml_path, 'rb') as f:
                         msg = BytesParser(policy=policy.default).parse(f)
                     
-                    # MBOX 메시지로 변환
                     mbox_msg = mailbox.mboxMessage(msg)
                     mbox.add(mbox_msg)
                     

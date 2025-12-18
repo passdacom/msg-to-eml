@@ -77,8 +77,19 @@ class MSGtoEMLConverter:
         
         self.log(f"변환 중: {msg_path.name}")
         
-        # MSG 파일 열기
-        msg = extract_msg.Message(str(msg_path))
+        # MSG 파일 열기 (유효성 검사 포함)
+        try:
+            msg = extract_msg.Message(str(msg_path))
+        except Exception as e:
+            error_str = str(e).lower()
+            if 'ole2' in error_str or 'not an ole' in error_str or 'olefileerror' in error_str:
+                raise ValueError(
+                    f"유효한 MSG 파일이 아닙니다: {msg_path.name}\n"
+                    f"이 파일은 Outlook MSG 형식(.msg)이 아닙니다.\n"
+                    f"파일 확장자만 .msg로 변경된 다른 형식의 파일일 수 있습니다."
+                )
+            else:
+                raise ValueError(f"MSG 파일을 열 수 없습니다: {msg_path.name} - {e}")
         
         try:
             # EML 메시지 생성
