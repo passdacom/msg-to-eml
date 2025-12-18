@@ -106,12 +106,59 @@ class MSGtoEMLConverter:
         finally:
             msg.close()
     
+    def _safe_get_html_body(self, msg) -> str:
+        """
+        HTML 본문을 안전하게 추출 (인코딩 오류 처리)
+        RTF에서 HTML 추출 시 cp949 등 인코딩 오류가 발생할 수 있음
+        """
+        try:
+            html_body = msg.htmlBody
+            if html_body:
+                # bytes인 경우 디코딩
+                if isinstance(html_body, bytes):
+                    try:
+                        return html_body.decode('utf-8')
+                    except UnicodeDecodeError:
+                        return html_body.decode('utf-8', errors='replace')
+                return html_body
+            return None
+        except UnicodeDecodeError as e:
+            self.log(f"HTML 본문 인코딩 오류 (폴백 사용): {e}")
+            return None
+        except Exception as e:
+            self.log(f"HTML 본문 추출 오류: {e}")
+            return None
+    
+    def _safe_get_body(self, msg) -> str:
+        """
+        텍스트 본문을 안전하게 추출 (인코딩 오류 처리)
+        """
+        try:
+            body = msg.body
+            if body:
+                if isinstance(body, bytes):
+                    try:
+                        return body.decode('utf-8')
+                    except UnicodeDecodeError:
+                        return body.decode('utf-8', errors='replace')
+                return body
+            return None
+        except UnicodeDecodeError as e:
+            self.log(f"텍스트 본문 인코딩 오류: {e}")
+            return None
+        except Exception as e:
+            self.log(f"텍스트 본문 추출 오류: {e}")
+            return None
+    
     def _create_eml_message(self, msg) -> email.message.EmailMessage:
         """MSG 객체로부터 EML 메시지 객체 생성"""
         
-        # 본문과 첨부파일 여부에 따라 메시지 타입 결정
-        has_html = msg.htmlBody is not None
-        has_plain = msg.body is not None
+        # 본문 추출 (인코딩 오류 처리)
+        html_body = self._safe_get_html_body(msg)
+        plain_body = self._safe_get_body(msg)
+        
+        has_html = html_body is not None
+        has_plain = plain_body is not None
         has_attachments = len(msg.attachments) > 0 if msg.attachments else False
         
         if has_attachments or (has_html and has_plain):
@@ -122,22 +169,22 @@ class MSGtoEMLConverter:
                 # 본문 파트
                 if has_html and has_plain:
                     body_part = MIMEMultipart('alternative')
-                    body_part.attach(MIMEText(msg.body or '', 'plain', 'utf-8'))
-                    body_part.attach(MIMEText(msg.htmlBody or '', 'html', 'utf-8'))
+                    body_part.attach(MIMEText(plain_body or '', 'plain', 'utf-8'))
+                    body_part.attach(MIMEText(html_body or '', 'html', 'utf-8'))
                     eml.attach(body_part)
                 elif has_html:
-                    eml.attach(MIMEText(msg.htmlBody, 'html', 'utf-8'))
+                    eml.attach(MIMEText(html_body, 'html', 'utf-8'))
                 elif has_plain:
-                    eml.attach(MIMEText(msg.body, 'plain', 'utf-8'))
+                    eml.attach(MIMEText(plain_body, 'plain', 'utf-8'))
             else:
                 # 첨부파일 없이 HTML과 Plain text만 있는 경우
                 eml = MIMEMultipart('alternative')
-                eml.attach(MIMEText(msg.body or '', 'plain', 'utf-8'))
-                eml.attach(MIMEText(msg.htmlBody or '', 'html', 'utf-8'))
+                eml.attach(MIMEText(plain_body or '', 'plain', 'utf-8'))
+                eml.attach(MIMEText(html_body or '', 'html', 'utf-8'))
         elif has_html:
-            eml = MIMEText(msg.htmlBody, 'html', 'utf-8')
+            eml = MIMEText(html_body, 'html', 'utf-8')
         else:
-            eml = MIMEText(msg.body or '', 'plain', 'utf-8')
+            eml = MIMEText(plain_body or '', 'plain', 'utf-8')
         
         # 헤더 설정
         self._set_headers(eml, msg)

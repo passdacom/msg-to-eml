@@ -65,11 +65,12 @@ except Exception as e:
     MSGtoEMLConverter = None
 
 try:
-    from converters.eml_to_msg import EMLtoMSGConverter
+    from converters.eml_to_msg import EMLtoMSGConverter, check_outlook_available as check_outlook_msg
     logger.info("EMLtoMSGConverter 로드 성공")
 except Exception as e:
     logger.error(f"EMLtoMSGConverter 로드 실패: {e}")
     EMLtoMSGConverter = None
+    check_outlook_msg = lambda: (False, "모듈 로드 실패")
 
 try:
     from converters.eml_to_pst import EMLtoPSTConverter, check_outlook_available, EMLtoMBOXConverter
@@ -577,12 +578,20 @@ class EmailConverterApp(ctk.CTk):
         )
         self.msg_to_eml_tab.pack(fill="both", expand=True)
         
-        # 탭 2: EML → MSG
+        # 탭 2: EML → MSG (Windows + Outlook 필요)
         tab2 = self.tabview.add("EML → MSG")
-        self.eml_to_msg_tab = ConverterTab(
-            tab2, self, "eml", "msg", EMLtoMSGConverter
-        )
-        self.eml_to_msg_tab.pack(fill="both", expand=True)
+        
+        if platform.system() == "Windows" and EMLtoMSGConverter:
+            available, error = check_outlook_msg()
+            if available:
+                self.eml_to_msg_tab = ConverterTab(
+                    tab2, self, "eml", "msg", EMLtoMSGConverter
+                )
+                self.eml_to_msg_tab.pack(fill="both", expand=True)
+            else:
+                self._show_feature_unavailable(tab2, "EML → MSG", f"Outlook 필요: {error}")
+        else:
+            self._show_feature_unavailable(tab2, "EML → MSG", "Windows + Outlook 필요")
         
         # 탭 3: EML → PST
         tab3 = self.tabview.add("EML → PST")
@@ -610,13 +619,17 @@ class EmailConverterApp(ctk.CTk):
         footer.grid(row=2, column=0, pady=(5, 15))
     
     def _show_pst_unavailable(self, parent, message: str):
-        """PST 변환 불가 메시지"""
+        """PST 변환 불가 메시지 (하위 호환성)"""
+        self._show_feature_unavailable(parent, "EML → PST", message)
+    
+    def _show_feature_unavailable(self, parent, feature_name: str, message: str):
+        """기능 불가 메시지 표시"""
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.pack(fill="both", expand=True)
         
         label = ctk.CTkLabel(
             frame,
-            text="⚠️ PST 변환 불가",
+            text=f"⚠️ {feature_name} 변환 불가",
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color="#f59e0b"
         )
@@ -632,7 +645,7 @@ class EmailConverterApp(ctk.CTk):
         
         info = ctk.CTkLabel(
             frame,
-            text="PST 변환은 Windows에서 Microsoft Outlook이\n설치된 환경에서만 사용할 수 있습니다.",
+            text="이 기능은 Windows에서 Microsoft Outlook이\n설치된 환경에서만 사용할 수 있습니다.",
             font=ctk.CTkFont(size=12),
             text_color="gray"
         )
