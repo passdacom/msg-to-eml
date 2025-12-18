@@ -96,23 +96,21 @@ class EMLtoPSTConverter:
         return check_outlook_available()
     
     def _init_outlook(self):
-        """Outlook 초기화"""
-        if self.outlook is None:
-            try:
-                pythoncom.CoInitialize()
-                self.outlook = win32com.client.Dispatch("Outlook.Application")
-                self.namespace = self.outlook.GetNamespace("MAPI")
-                self.log("Outlook 연결 성공")
-            except Exception as e:
-                raise RuntimeError(f"Outlook 초기화 실패: {e}")
+        """Outlook 초기화 (현재 스레드에서)"""
+        try:
+            # 항상 현재 스레드에서 COM 초기화
+            pythoncom.CoInitialize()
+            self.outlook = win32com.client.Dispatch("Outlook.Application")
+            self.namespace = self.outlook.GetNamespace("MAPI")
+            self.log("Outlook 연결 성공")
+        except Exception as e:
+            raise RuntimeError(f"Outlook 초기화 실패: {e}")
     
     def _cleanup_outlook(self):
-        """Outlook 정리"""
+        """Outlook 정리 (현재 스레드에서)"""
         try:
-            if self.namespace:
-                self.namespace = None
-            if self.outlook:
-                self.outlook = None
+            self.namespace = None
+            self.outlook = None
             pythoncom.CoUninitialize()
         except:
             pass

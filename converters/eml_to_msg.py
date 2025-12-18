@@ -6,6 +6,8 @@ EML to MSG Converter
 
 기술: Windows에서 pywin32를 통한 Outlook COM 사용
 요구사항: Windows + Microsoft Outlook 설치
+
+참고: COM 객체는 스레드별로 초기화해야 함
 """
 
 import os
@@ -41,10 +43,16 @@ def check_outlook_available() -> tuple:
         return False, OUTLOOK_ERROR
     
     try:
+        pythoncom.CoInitialize()
         outlook = win32com.client.Dispatch("Outlook.Application")
         namespace = outlook.GetNamespace("MAPI")
+        pythoncom.CoUninitialize()
         return True, None
     except Exception as e:
+        try:
+            pythoncom.CoUninitialize()
+        except:
+            pass
         return False, f"Outlook을 시작할 수 없습니다: {e}"
 
 
@@ -53,22 +61,10 @@ class EMLtoMSGConverter:
     
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
-        self.outlook = None
-        self.namespace = None
-        self._check_availability()
-    
-    def _check_availability(self):
-        """Outlook 사용 가능 여부 확인 및 초기화"""
+        # 초기 가용성 확인 (메인 스레드에서)
         self.available, self.error = check_outlook_available()
         if self.available:
-            try:
-                pythoncom.CoInitialize()
-                self.outlook = win32com.client.Dispatch("Outlook.Application")
-                self.namespace = self.outlook.GetNamespace("MAPI")
-                self.log("Outlook 연결 성공")
-            except Exception as e:
-                self.available = False
-                self.error = str(e)
+            self.log("Outlook 연결 성공")
     
     def log(self, message: str):
         """상세 모드에서만 메시지 출력"""
@@ -91,8 +87,8 @@ class EMLtoMSGConverter:
         Returns:
             생성된 .msg 파일 경로
         """
-        if not self.available:
-            raise RuntimeError(f"EML→MSG 변환을 사용할 수 없습니다: {self.error}")
+        if not OUTLOOK_AVAILABLE:
+            raise RuntimeError(f"EML→MSG 변환을 사용할 수 없습니다: {OUTLOOK_ERROR}")
         
         eml_path = Path(eml_path)
         
@@ -114,18 +110,32 @@ class EMLtoMSGConverter:
         with open(eml_path, 'rb') as f:
             msg = BytesParser(policy=policy.default).parse(f)
         
-        # Outlook을 통해 MSG 파일 생성
-        self._create_msg_via_outlook(msg, output_path)
+        # COM 초기화 (현재 스레드에서)
+        pythoncom.CoInitialize()
         
-        self.log(f"저장됨: {output_path.name}")
-        
-        return str(output_path)
+        try:
+            # Outlook 인스턴스 생성 (현재 스레드에서)
+            outlook = win32com.client.Dispatch("Outlook.Application")
+            
+            # MSG 파일 생성
+            self._create_msg_via_outlook(outlook, msg, output_path)
+            
+            self.log(f"저장됨: {output_path.name}")
+            
+            return str(output_path)
+            
+        finally:
+            # COM 정리 (현재 스레드에서)
+            try:
+                pythoncom.CoUninitialize()
+            except:
+                pass
     
-    def _create_msg_via_outlook(self, email_msg, output_path: Path):
+    def _create_msg_via_outlook(self, outlook, email_msg, output_path: Path):
         """Outlook COM을 사용하여 MSG 파일 생성"""
         
         # 새 메일 아이템 생성
-        mail_item = self.outlook.CreateItem(0)  # 0 = olMailItem
+        mail_item = outlook.CreateItem(0)  # 0 = olMailItem
         
         # 제목 설정
         subject = email_msg.get('Subject', '')
@@ -215,7 +225,6 @@ class EMLtoMSGConverter:
                                     pass
         
         # MSG 파일로 저장
-        # olMSGUnicode = 9
         mail_item.SaveAs(str(output_path), 3)  # 3 = olMSG
         
         self.log(f"MSG 파일 생성 완료: {output_path}")
@@ -252,8 +261,8 @@ class EMLtoMSGConverter:
     def convert_directory(self, directory: str, recursive: bool = False, 
                          output_dir: str = None) -> list:
         """디렉토리 내의 모든 EML 파일을 변환"""
-        if not self.available:
-            raise RuntimeError(f"EML→MSG 변환을 사용할 수 없습니다: {self.error}")
+        if not OUTLOOK_AVAILABLE:
+            raise RuntimeError(f"EML→MSG 변환을 사용할 수 없습니다: {OUTLOOK_ERROR}")
         
         directory = Path(directory)
         
@@ -298,11 +307,3 @@ class EMLtoMSGConverter:
         print(f"\n변환 완료: {len(converted)}개 성공, {len(errors)}개 실패")
         
         return converted
-    
-    def __del__(self):
-        """정리"""
-        try:
-            if OUTLOOK_AVAILABLE:
-                pythoncom.CoUninitialize()
-        except:
-            pass
