@@ -349,29 +349,47 @@ class EMLtoPSTConverter:
                                 except:
                                     pass
         
-        # 저장 (아직 폴더에서 생성한 경우 이미 해당 폴더에 있음)
+        # 먼저 저장하여 메시지 생성
         mail_item.Save()
         
         # MAPI 속성 수정하여 '받은 메일'로 표시
+        # 핵심: MSGFLAG_UNSENT 비트를 클리어해야 함
         try:
             prop_accessor = mail_item.PropertyAccessor
             
-            # 메시지 플래그: UNSENT 플래그 제거, READ 플래그 추가
-            # MSGFLAG_READ (0x0001) 만 설정 = 읽음 상태의 받은 메일
-            prop_accessor.SetProperty(self.PR_MESSAGE_FLAGS, self.MSGFLAG_READ)
+            # 현재 메시지 플래그 읽기
+            try:
+                current_flags = prop_accessor.GetProperty(self.PR_MESSAGE_FLAGS)
+            except:
+                current_flags = self.MSGFLAG_UNSENT  # 기본값: 미발송
+            
+            # MSGFLAG_UNSENT (0x0008) 비트 클리어
+            # 비트 AND NOT 연산으로 해당 비트만 제거
+            new_flags = current_flags & (~self.MSGFLAG_UNSENT)
+            
+            # MSGFLAG_READ (0x0001) 비트 추가 (읽음 상태)
+            new_flags = new_flags | self.MSGFLAG_READ
+            
+            self.log(f"플래그 변경: 0x{current_flags:08X} -> 0x{new_flags:08X}")
+            
+            # 새 플래그 설정
+            prop_accessor.SetProperty(self.PR_MESSAGE_FLAGS, new_flags)
             
             # 받은 시간 설정
             if received_time:
                 try:
                     prop_accessor.SetProperty(self.PR_MESSAGE_DELIVERY_TIME, received_time)
                     prop_accessor.SetProperty(self.PR_CLIENT_SUBMIT_TIME, received_time)
-                except:
-                    pass
+                except Exception as e:
+                    self.log(f"시간 설정 실패: {e}")
             
+            # 변경사항 저장
             mail_item.Save()
             
         except Exception as e:
             self.log(f"MAPI 속성 설정 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         # 아이템이 다른 폴더에 있으면 대상 폴더로 이동
         try:
